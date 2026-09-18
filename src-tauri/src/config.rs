@@ -114,18 +114,23 @@ pub fn load() -> &'static DeviceConfig {
 }
 
 fn build_config() -> Result<DeviceConfig> {
-    // 服务器/密钥等配置由 build.rs 在编译期从 .env 内置（见 option_env!()）
+    // 服务器/密钥等配置由 build.rs 在编译期从 .env 内置（见 option_env!()）。
+    //
+    // 这里一律用 baked_str()（空值视为未设置）而不是 option_env!(..).is_some()：
+    // build.rs 会把 `.env` 里写成 `KEY=` 的空值也固化进去，于是 option_env! 返回
+    // Some("")，is_some() 为真 —— 日志就会打印 `password=fixed (baked)`，而实际
+    // 生效的是一次性随机密码。日志说假话比没日志更费时间。
+    let baked_server = baked_str(option_env!("RUSTDESK_SERVER"));
+    let baked_key = baked_str(option_env!("RUSTDESK_KEY"));
+    let baked_id_env = baked_str(option_env!("RUSTDESK_ID"));
+    let baked_password_env = baked_str(option_env!("RUSTDESK_PASSWORD"));
     log::info!(
         "baked config: server={:?}, key={} ({} bytes), id={:?}, password={}",
-        option_env!("RUSTDESK_SERVER"),
-        if option_env!("RUSTDESK_KEY").map(|v| !v.is_empty()).unwrap_or(false) {
-            "set"
-        } else {
-            "empty"
-        },
-        option_env!("RUSTDESK_KEY").map(|v| v.len()).unwrap_or(0),
-        option_env!("RUSTDESK_ID"),
-        if option_env!("RUSTDESK_PASSWORD").is_some() {
+        baked_server.as_deref(),
+        if baked_key.is_some() { "set" } else { "empty" },
+        baked_key.as_deref().map(|v| v.len()).unwrap_or(0),
+        baked_id_env.as_deref(),
+        if baked_password_env.is_some() {
             "fixed (baked)"
         } else {
             "one-time (regenerated each launch)"
@@ -162,15 +167,14 @@ fn build_config() -> Result<DeviceConfig> {
     // ID: stable per installation. A baked value wins (deliberately supported
     // for unattended machines), otherwise reuse what we persisted, otherwise
     // mint a fresh one.
-    let baked_id = baked_str(option_env!("RUSTDESK_ID"));
-    if baked_id.is_some() {
+    if baked_id_env.is_some() {
         warn!(
             "RUSTDESK_ID is baked into this binary: EVERY client will report the same ID \
              and they will overwrite each other on the server. Only use it for a single \
              unattended machine."
         );
     }
-    let id = baked_id
+    let id = baked_id_env
         .or_else(|| if saved_id.is_empty() { None } else { Some(saved_id.clone()) })
         .unwrap_or_else(generate_id);
 
@@ -183,8 +187,7 @@ fn build_config() -> Result<DeviceConfig> {
     //     forever after a customer has read it out loud once;
     //   * a fixed password shared by every client would blur them together.
     // Bake `RUSTDESK_PASSWORD` for the "permanent password" use case instead.
-    let password = baked_str(option_env!("RUSTDESK_PASSWORD"))
-        .unwrap_or_else(generate_password);
+    let password = baked_password_env.unwrap_or_else(generate_password);
 
     // Permanent password salt. Reuse the saved one if present so already-paired
     // controllers keep validating; otherwise generate and persist it once.
@@ -234,15 +237,14 @@ fn build_config() -> Result<DeviceConfig> {
         .map(|u| u.as_bytes().to_vec())
         .unwrap_or_default();
 
-    let server = baked_str(option_env!("RUSTDESK_SERVER"))
-        .unwrap_or_else(|| DEFAULT_RENDEZVOUS_SERVERS[0].to_string());
+    let server = baked_server.unwrap_or_else(|| DEFAULT_RENDEZVOUS_SERVERS[0].to_string());
 
     let cfg = DeviceConfig {
         id,
         password,
         password_salt,
         server,
-        licence_key: baked_str(option_env!("RUSTDESK_KEY")).unwrap_or_default(),
+        licence_key: baked_key.unwrap_or_default(),
         socks5: baked_str(option_env!("RUSTDESK_SOCKS5")).unwrap_or_default(),
         sign_sk,
         sign_pk,
