@@ -30,6 +30,8 @@ bytes = "1"
 protobuf = { version = "3.7", features = ["with-bytes"] }
 sodiumoxide = "0.2"
 mac_address = "1.1"
+# local IPv4 discovery, for the direct-IP address readout in the UI
+local-ip-address = "0.6"
 # screen capture + encode
 xcap = "0.4"
 image = "0.25"

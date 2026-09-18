@@ -20,6 +20,9 @@ pub const DEFAULT_RENDEZVOUS_SERVERS: &[&str] = &[
 ];
 pub const RENDEZVOUS_PORT: u16 = 21116;
 pub const RELAY_PORT: u16 = 21117;
+/// Default port for direct (IP) access. Matches RustDesk's own default of
+/// `RENDEZVOUS_PORT + 2`; a controller dials `RELAY_PORT + 1` to reach it.
+pub const DIRECT_PORT: u16 = RENDEZVOUS_PORT + 2;
 
 #[derive(Clone)]
 pub struct DeviceConfig {
@@ -246,4 +249,28 @@ pub fn split_host_port(addr: &str, default_port: u16) -> (String, u16) {
         }
     }
     (addr.to_string(), default_port)
+}
+
+/// Whether the direct-IP listener should run.
+///
+/// Defaults to ON: IP direct access is the reason this fork exists, and the
+/// relay path keeps working alongside it, so enabling it costs nothing beyond a
+/// listening socket. Build with `RUSTDESK_DIRECT=N` for a relay-only client.
+pub fn direct_enabled() -> bool {
+    match option_env!("RUSTDESK_DIRECT") {
+        None => true,
+        Some(v) => {
+            let v = v.trim();
+            v.is_empty() || matches!(v.to_ascii_uppercase().as_str(), "Y" | "YES" | "TRUE" | "1")
+        }
+    }
+}
+
+/// Port the direct listener binds. Falls back to `DIRECT_PORT` when unset or
+/// unparsable, mirroring the official `get_direct_port()`.
+pub fn direct_port() -> u16 {
+    option_env!("RUSTDESK_DIRECT_PORT")
+        .and_then(|v| v.trim().parse::<u16>().ok())
+        .filter(|p| *p > 0)
+        .unwrap_or(DIRECT_PORT)
 }

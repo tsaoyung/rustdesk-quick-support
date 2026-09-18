@@ -55,6 +55,21 @@
                             </button>
                         </div>
                     </div>
+
+                    <div class="info-block" id="directBlock">
+                        <label class="info-label">Direct IP access</label>
+                        <div class="info-value-container">
+                            <span class="info-value ip" id="localIp">---.---.---.---</span>
+                            <button class="copy-btn" onclick="copyToClipboard('localIp')" title="Copy IP">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <rect x="5" y="5" width="9" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                                    <path d="M3 11H2C1.4 11 1 10.6 1 10V2C1 1.4 1.4 1 2 1H10C10.6 1 11 1.4 11 2V3" stroke="currentColor" stroke-width="1.5"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="ip-hint" id="ipHint">Port 21118 · listening</div>
+                        <div class="ip-others" id="ipOthers" style="display:none;"></div>
+                    </div>
                 </div>
 
                 <div class="status-message" id="statusMessage">

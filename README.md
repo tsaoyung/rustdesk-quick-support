@@ -56,6 +56,12 @@ RUSTDESK_ID=
 
 # 预设密码（留空则自动随机生成）
 RUSTDESK_PASSWORD=
+
+# 直接 IP 访问（默认 Y；设为 N 则为纯中继客户端）
+RUSTDESK_DIRECT=Y
+
+# 直接 IP 访问端口（默认 21118）
+RUSTDESK_DIRECT_PORT=21118
 ```
 
 | 变量 | 说明 | 必填 |
@@ -65,8 +71,27 @@ RUSTDESK_PASSWORD=
 | `RUSTDESK_SOCKS5` | 代理地址 | 否 |
 | `RUSTDESK_ID` | 预设设备 ID，留空自动生成 | 否 |
 | `RUSTDESK_PASSWORD` | 预设连接密码，留空随机 6 位 | 否 |
+| `RUSTDESK_DIRECT` | 允许直接 IP 访问，默认 `Y` | 否 |
+| `RUSTDESK_DIRECT_PORT` | 直接 IP 访问端口，默认 `21118` | 否 |
 
 修改 `.env` 后需重新编译。
+
+---
+
+## 直接 IP 访问（不走服务器）
+
+被控端除中继链路外，还会监听一个 TCP 端口（默认 **21118**），控制端可以直接输入 IP 连接，**完全不需要 ID 服务器或中继服务器**：
+
+1. 被控端打开后，主界面 `Direct IP access` 一栏显示本机 IP，点击右侧按钮可复制。
+2. 控制端打开新连接，在 ID 输入框里填**对端 IP**；改过端口则填 `IP:端口`。
+3. 输入被控端显示的密码即可连上。
+
+要点：
+
+- **网络必须可达**：同局域网直接可用；跨公网要求被控端有公网 IP 或做过端口映射（把 TCP 21118 映射到被控端）。NAT 后无映射时这条路不通，请改用中继模式。
+- **防火墙**需放行 TCP 21118 入站（Windows 首次运行会弹窗，选择允许即可）。
+- 界面显示的 IP 已做优先级排序：**默认路由出口地址排第一**，虚拟网卡（Parallels / VPN 等）排在下面的 `Also:` 里。第一行连不上时再试备选地址。
+- 直连与中继**可同时工作**：服务器不可达时直连依然可用，主界面会给出提示。只想保留中继模式，把 `RUSTDESK_DIRECT` 设为 `N` 重新编译。
 
 ---
 
@@ -86,6 +111,8 @@ RUSTDESK_PASSWORD=
    - `server`：中继服务器地址（域名或 IP，留空用默认 `rs-ny.rustdesk.com`）
    - `key`：服务器密钥（未开启认证则留空）
    - `socks5`：Socks5 代理 `host:port`（可选）
+   - `direct`：是否允许直接 IP 访问（默认 `Y`）
+   - `direct_port`：直接 IP 访问端口（默认 `21118`）
    - `publish`：是否发布到 Release（默认 `true`，自动生成预发布 tag `v0.1.0-ci.<run>-<sha7>`）
 
    构建完成后产物既在该 run 的 Artifacts 里，也会（默认）发布为一条 **Pre-release**。
@@ -94,7 +121,7 @@ RUSTDESK_PASSWORD=
    git tag v0.1.0 && git push origin v0.1.0
    ```
 
-<a name="secrets"></a>**通过 Secrets 配置（用于 tag 自动发布）**：在仓库 Settings → Secrets and variables → Actions 添加 `RUSTDESK_SERVER`、`RUSTDESK_KEY`、`RUSTDESK_SOCKS5`，tag 触发时会读取并内置。
+<a name="secrets"></a>**通过 Secrets 配置（用于 tag 自动发布）**：在仓库 Settings → Secrets and variables → Actions 添加 `RUSTDESK_SERVER`、`RUSTDESK_KEY`、`RUSTDESK_SOCKS5`（可选再加 `RUSTDESK_DIRECT`、`RUSTDESK_DIRECT_PORT`），tag 触发时会读取并内置；未设置的项按默认值处理（`direct=Y`、`port=21118`）。
 
 > ✅ 配置是在**编译期**内置进二进制的：`src-tauri/build.rs` 读取 `.env`/环境变量，通过 `cargo:rustc-env` 固化，源码用 `option_env!()` 读取（见 `src-tauri/src/config.rs`）。因此通过 AppImage/DMG/便携 exe 分发的客户端**无需 `.env` 即可连接你指定的服务器**，双击即用。
 

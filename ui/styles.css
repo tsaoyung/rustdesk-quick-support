@@ -218,6 +218,29 @@ body {
     letter-spacing: 3px;
 }
 
+/* Direct-IP readout: a dotted quad is much wider than an ID, so it gets a
+   smaller size and tighter tracking to stay on one line in a 420px window. */
+.info-value.ip {
+    font-size: 17px;
+    letter-spacing: 0.5px;
+}
+
+.ip-hint {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--success);
+}
+
+.ip-hint.off {
+    color: var(--text-muted);
+}
+
+.ip-others {
+    font-size: 11px;
+    color: var(--text-muted);
+    word-break: break-all;
+}
+
 .copy-btn {
     display: flex;
     align-items: center;

@@ -9,6 +9,8 @@ const BAKED_KEYS: &[&str] = &[
     "RUSTDESK_SOCKS5",
     "RUSTDESK_ID",
     "RUSTDESK_PASSWORD",
+    "RUSTDESK_DIRECT",
+    "RUSTDESK_DIRECT_PORT",
 ];
 
 fn bake_env_config() {

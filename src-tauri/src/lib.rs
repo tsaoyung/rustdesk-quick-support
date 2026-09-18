@@ -6,8 +6,10 @@ mod bytes_codec;
 mod codec;
 mod config;
 mod connection;
+mod direct;
 mod fs;
 mod input;
+mod netinfo;
 mod proto_gen;
 mod rendezvous;
 mod video;
@@ -21,6 +23,7 @@ static APP_STATE: Lazy<Mutex<AppState>> = Lazy::new(|| {
         peer_name: String::new(),
         file_transfer_active: false,
         file_transfer_label: String::new(),
+        direct_listening: false,
     })
 });
 
@@ -31,6 +34,7 @@ struct AppState {
     peer_name: String,
     file_transfer_active: bool,
     file_transfer_label: String,
+    direct_listening: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +47,12 @@ struct ConnectionStatus {
     password: String,
     file_transfer_active: bool,
     file_transfer_label: String,
+    /// Port the direct-IP listener is bound to (shown in the UI so the person
+    /// being helped can read out a dialable address).
+    direct_port: u16,
+    direct_listening: bool,
+    /// Local IPv4 addresses, most-likely-reachable first.
+    local_ips: Vec<String>,
 }
 
 pub fn set_server_online(online: bool) {
@@ -65,6 +75,12 @@ pub fn set_file_transfer(active: bool, label: String) {
     }
 }
 
+pub fn set_direct_listening(listening: bool) {
+    if let Ok(mut s) = APP_STATE.lock() {
+        s.direct_listening = listening;
+    }
+}
+
 #[tauri::command]
 fn get_id() -> String {
     config::get_id()
@@ -77,17 +93,32 @@ fn get_password() -> String {
 
 #[tauri::command]
 fn get_status() -> ConnectionStatus {
-    let state = APP_STATE.lock().unwrap();
+    // Copy the snapshot out and release the lock before touching the network
+    // stack: enumerating interfaces is I/O and must not block the setters.
+    let (server_online, connected, peer_name, ft_active, ft_label, direct_listening) = {
+        let s = APP_STATE.lock().unwrap();
+        (
+            s.server_online,
+            s.peer_connected,
+            s.peer_name.clone(),
+            s.file_transfer_active,
+            s.file_transfer_label.clone(),
+            s.direct_listening,
+        )
+    };
     let cfg = config::load();
     ConnectionStatus {
-        server_online: state.server_online,
-        connected: state.peer_connected,
-        peer_name: state.peer_name.clone(),
+        server_online,
+        connected,
+        peer_name,
         server: cfg.server.clone(),
         id: config::get_id(),
         password: config::get_password(),
-        file_transfer_active: state.file_transfer_active,
-        file_transfer_label: state.file_transfer_label.clone(),
+        file_transfer_active: ft_active,
+        file_transfer_label: ft_label,
+        direct_port: config::direct_port(),
+        direct_listening,
+        local_ips: netinfo::local_ips(),
     }
 }
 
@@ -138,7 +169,12 @@ pub fn run() {
             }
             std::thread::spawn(|| {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(rendezvous::run());
+                rt.block_on(async {
+                    // The direct-IP listener runs alongside the rendezvous task:
+                    // two independent entry points into the same session body.
+                    direct::spawn();
+                    rendezvous::run().await;
+                });
             });
             Ok(())
         })

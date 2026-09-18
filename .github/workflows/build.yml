@@ -18,6 +18,14 @@ on:
         description: "Socks5 代理 host:port（可选）"
         required: false
         default: ""
+      direct:
+        description: "允许直接 IP 访问（Y/N，默认 Y）"
+        required: false
+        default: "Y"
+      direct_port:
+        description: "直接 IP 访问端口（默认 21118）"
+        required: false
+        default: "21118"
       publish:
         description: "是否发布到 Release（自动生成预发布 tag）"
         type: boolean
@@ -106,6 +114,8 @@ jobs:
           RUSTDESK_SOCKS5=${SOCKS5}
           RUSTDESK_ID=
           RUSTDESK_PASSWORD=
+          RUSTDESK_DIRECT=${DIRECT}
+          RUSTDESK_DIRECT_PORT=${DIRECT_PORT}
           EOF
           echo "---- .env (key/redacted) ----"
           sed -E 's/(RUSTDESK_KEY)=.*/\1=<redacted>/' .env
@@ -113,6 +123,8 @@ jobs:
           SERVER: ${{ inputs.server || secrets.RUSTDESK_SERVER }}
           KEY: ${{ inputs.key || secrets.RUSTDESK_KEY }}
           SOCKS5: ${{ inputs.socks5 || secrets.RUSTDESK_SOCKS5 }}
+          DIRECT: ${{ inputs.direct || secrets.RUSTDESK_DIRECT || 'Y' }}
+          DIRECT_PORT: ${{ inputs.direct_port || secrets.RUSTDESK_DIRECT_PORT || '21118' }}
 
       - name: Build (${{ matrix.target }})
         run: cargo tauri build --target ${{ matrix.target }} ${{ matrix.bundle_args }}

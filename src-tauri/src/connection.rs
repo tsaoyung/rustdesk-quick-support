@@ -1,7 +1,7 @@
 // Connection handler: secure handshake, login, then a reader loop (input +
 // control) that runs concurrently with a writer task (video + responses), so
 // slow video writes can never starve incoming input or TestDelay pings.
-use crate::codec::{PeerHalves, Encrypt};
+use crate::codec::{Encrypt, PeerHalves, Reader, Writer};
 use crate::config::DeviceConfig;
 use crate::fs;
 use crate::input;
@@ -30,10 +30,14 @@ enum InputMsg {
     Key(KeyEvent),
 }
 
+/// Relay entry point. hbbr requires a `RequestRelay` envelope before any
+/// controller traffic can flow, so send that first and then hand both halves to
+/// the shared session body — which is byte-identical to what a direct (IP)
+/// connection runs after `accept()`.
 pub async fn serve_relay(tcp: TcpStream, cfg: DeviceConfig, uuid: String, peer_addr: SocketAddr) -> Result<()> {
     info!("new relay connection from {peer_addr}");
     let PeerHalves {
-        mut reader,
+        reader,
         mut writer,
         peer_addr: _,
     } = PeerHalves::from_tcp(tcp, peer_addr);
@@ -46,6 +50,32 @@ pub async fn serve_relay(tcp: TcpStream, cfg: DeviceConfig, uuid: String, peer_a
     m.set_request_relay(req);
     writer.send_msg(&m).await?;
 
+    serve_session(reader, writer, cfg, peer_addr).await
+}
+
+/// Direct-IP entry point (RustDesk's "allow direct IP access"). Here the peer is
+/// the controller itself rather than hbbr, so there is no relay envelope to
+/// send: the accepted socket goes straight into the same secure session.
+pub async fn serve_direct(tcp: TcpStream, cfg: DeviceConfig, peer_addr: SocketAddr) -> Result<()> {
+    info!("new direct connection from {peer_addr}");
+    let PeerHalves {
+        reader,
+        writer,
+        peer_addr: _,
+    } = PeerHalves::from_tcp(tcp, peer_addr);
+
+    serve_session(reader, writer, cfg, peer_addr).await
+}
+
+/// Shared session body: secure handshake -> Hash -> reader/writer loop.
+/// Reached from both `serve_relay` and `serve_direct`; nothing below this point
+/// knows how the socket was obtained.
+async fn serve_session(
+    mut reader: Reader,
+    mut writer: Writer,
+    cfg: DeviceConfig,
+    peer_addr: SocketAddr,
+) -> Result<()> {
     // --- Secure handshake ---
     let (our_pk_b, our_sk_b) = box_::gen_keypair();
     let mut idpk = IdPk::new();
