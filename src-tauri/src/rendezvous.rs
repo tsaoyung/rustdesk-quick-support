@@ -25,16 +25,42 @@ pub async fn run() {
     }
 
     let (host, port) = config::split_host_port(&cfg.server, RENDEZVOUS_PORT);
-    let server_addr: SocketAddr = format!("{}:{}", host, port)
-        .parse()
-        .unwrap_or_else(|_| ([0, 0, 0, 0], RENDEZVOUS_PORT).into());
 
     loop {
-        if let Err(e) = run_session(cfg, server_addr).await {
-            error!("rendezvous session error: {e}");
+        // Resolve on every attempt so a transient DNS failure (or a server
+        // change) can recover without restarting the app.
+        match resolve(&host, port).await {
+            Ok(server_addr) => {
+                if let Err(e) = run_session(cfg, server_addr).await {
+                    error!("rendezvous session error: {e}");
+                }
+            }
+            Err(e) => error!("cannot resolve rendezvous server {host}:{port}: {e}"),
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
+}
+
+/// Resolve `host:port` into a socket address.
+///
+/// `host` may be a literal IP *or* a domain name. A bare `SocketAddr::parse`
+/// accepts only numeric addresses, so a hostname (e.g. the default
+/// `rs-ny.rustdesk.com`) would fail and silently fall back to an unroutable
+/// `0.0.0.0` — every registration datagram would then be dropped and the
+/// device would never come online. Go through the system resolver instead; it
+/// handles the literal-IP case too.
+async fn resolve(host: &str, port: u16) -> Result<SocketAddr> {
+    let target = format!("{host}:{port}");
+    // Collect eagerly: the lookup iterator borrows `target`, and returning it
+    // directly would keep that borrow alive past the end of this block.
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&target)
+        .await
+        .map_err(|e| anyhow::anyhow!("lookup {target}: {e}"))?
+        .collect();
+    addrs
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no address resolved for {target}"))
 }
 
 async fn run_session(cfg: &'static DeviceConfig, server_addr: SocketAddr) -> Result<()> {
@@ -247,7 +273,7 @@ async fn run_relay(
 
     // 2) Connect to the relay server (hbbr, default 21117) and run the session.
     let (rhost, rport) = config::split_host_port(&relay_server, config::RELAY_PORT);
-    let relay_addr: SocketAddr = format!("{rhost}:{rport}").parse()?;
+    let relay_addr: SocketAddr = resolve(&rhost, rport).await?;
     info!("connecting to relay server {relay_addr} (uuid={uuid})");
     let tcp = tokio::time::timeout(
         Duration::from_secs(15),
