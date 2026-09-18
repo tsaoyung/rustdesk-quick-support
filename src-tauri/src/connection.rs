@@ -50,12 +50,15 @@ pub async fn serve_relay(tcp: TcpStream, cfg: DeviceConfig, uuid: String, peer_a
     m.set_request_relay(req);
     writer.send_msg(&m).await?;
 
-    serve_session(reader, writer, cfg, peer_addr).await
+    serve_session(reader, writer, cfg, peer_addr, true).await
 }
 
 /// Direct-IP entry point (RustDesk's "allow direct IP access"). Here the peer is
 /// the controller itself rather than hbbr, so there is no relay envelope to
-/// send: the accepted socket goes straight into the same secure session.
+/// send. `secure` is false to mirror the official `direct_server`, which passes
+/// `false` to `create_tcp_connection`: a controller dialling a bare IP never
+/// learns our signing key, so no Secure handshake can be negotiated at all.
+/// Both sides go straight to the plaintext login flow.
 pub async fn serve_direct(tcp: TcpStream, cfg: DeviceConfig, peer_addr: SocketAddr) -> Result<()> {
     info!("new direct connection from {peer_addr}");
     let PeerHalves {
@@ -64,7 +67,7 @@ pub async fn serve_direct(tcp: TcpStream, cfg: DeviceConfig, peer_addr: SocketAd
         peer_addr: _,
     } = PeerHalves::from_tcp(tcp, peer_addr);
 
-    serve_session(reader, writer, cfg, peer_addr).await
+    serve_session(reader, writer, cfg, peer_addr, false).await
 }
 
 /// Shared session body: secure handshake -> Hash -> reader/writer loop.
@@ -75,40 +78,67 @@ async fn serve_session(
     mut writer: Writer,
     cfg: DeviceConfig,
     peer_addr: SocketAddr,
+    secure: bool,
 ) -> Result<()> {
-    // --- Secure handshake ---
-    let (our_pk_b, our_sk_b) = box_::gen_keypair();
-    let mut idpk = IdPk::new();
-    idpk.id = cfg.id.clone();
-    idpk.pk = bytes::Bytes::copy_from_slice(&our_pk_b.0);
-    let idpk_bytes = idpk.write_to_bytes()?;
+    if secure {
+        // --- Secure handshake (relay path only) ---
+        let (our_pk_b, our_sk_b) = box_::gen_keypair();
+        let mut idpk = IdPk::new();
+        idpk.id = cfg.id.clone();
+        idpk.pk = bytes::Bytes::copy_from_slice(&our_pk_b.0);
+        let idpk_bytes = idpk.write_to_bytes()?;
 
-    let mut sign_sk_arr = [0u8; sign::SECRETKEYBYTES];
-    sign_sk_arr.copy_from_slice(&cfg.sign_sk);
-    let sign_sk = sign::SecretKey(sign_sk_arr);
-    let signed = sign::sign(&idpk_bytes, &sign_sk);
+        let mut sign_sk_arr = [0u8; sign::SECRETKEYBYTES];
+        sign_sk_arr.copy_from_slice(&cfg.sign_sk);
+        let sign_sk = sign::SecretKey(sign_sk_arr);
+        let signed = sign::sign(&idpk_bytes, &sign_sk);
 
-    let mut sid = SignedId::new();
-    sid.id = bytes::Bytes::from(signed);
-    let mut msg = Message::new();
-    msg.set_signed_id(sid);
-    writer.send_msg(&msg).await?;
+        let mut sid = SignedId::new();
+        sid.id = bytes::Bytes::from(signed);
+        let mut msg = Message::new();
+        msg.set_signed_id(sid);
+        writer.send_msg(&msg).await?;
 
-    let bytes = match reader.next_msg().await {
-        Some(Ok(b)) if !b.is_empty() => b,
-        Some(Ok(_)) => bail!("handshake: empty frame"),
-        Some(Err(e)) => bail!("handshake read error: {e}"),
-        None => bail!("handshake: peer closed before PublicKey"),
-    };
-    let msg_in = Message::parse_from_bytes(&bytes)?;
-    let pk = match msg_in.union {
-        Some(mu::PublicKey(pk)) => pk,
-        _ => bail!("expected PublicKey"),
-    };
-    let session_key = Encrypt::open_session_key(&pk.symmetric_value, &pk.asymmetric_value, &our_sk_b)?;
-    writer.set_key(session_key.clone());
-    reader.set_key(session_key);
-    info!("secure stream established with {peer_addr}");
+        // The controller answers with PublicKey only when it can verify our
+        // identity (relay path: it fetched our pk from hbbs). When it cannot —
+        // direct IP access, or a pk mismatch — it sends an empty message and
+        // keeps going unencrypted. The official server.rs logs that case and
+        // continues instead of aborting, so any non-PublicKey first message
+        // degrades to a plaintext session here as well.
+        let bytes = match reader.next_msg().await {
+            Some(Ok(b)) => b,
+            Some(Err(e)) => bail!("handshake read error: {e}"),
+            None => bail!("handshake: peer closed before PublicKey"),
+        };
+        let mut session_key = None;
+        match Message::parse_from_bytes(&bytes) {
+            Ok(msg_in) => match msg_in.union {
+                Some(mu::PublicKey(pk)) if pk.asymmetric_value.len() == box_::PUBLICKEYBYTES => {
+                    session_key = Some(Encrypt::open_session_key(
+                        &pk.symmetric_value,
+                        &pk.asymmetric_value,
+                        &our_sk_b,
+                    )?);
+                }
+                Some(mu::PublicKey(pk)) if pk.asymmetric_value.is_empty() => {
+                    info!("peer requested a pk update; continuing without encryption");
+                }
+                Some(_) => warn!("unexpected first message; continuing without encryption"),
+                None => info!("empty first message; continuing without encryption"),
+            },
+            Err(e) => warn!("unparsable first message ({e}); continuing without encryption"),
+        }
+        match session_key {
+            Some(key) => {
+                writer.set_key(key.clone());
+                reader.set_key(key);
+                info!("secure stream established with {peer_addr}");
+            }
+            None => info!("plaintext stream with {peer_addr} (no session key negotiated)"),
+        }
+    } else {
+        info!("direct connection from {peer_addr}: no secure handshake (plaintext)");
+    }
 
     // --- Send Hash (salt + challenge) ---
     // The salt is the PERMANENT device salt (stable across connections) so that
