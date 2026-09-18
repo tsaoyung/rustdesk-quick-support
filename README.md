@@ -4,7 +4,9 @@
 
 ## 下载与运行
 
-到 [Releases](https://github.com/lu9944/rustdesk-quick-support/releases) 下载对应平台的产物（服务器配置已内置，无需再设置）。
+到 [Releases](https://github.com/tsaoyung/rustdesk-quick-support/releases) 下载对应平台的产物（服务器配置已内置，无需再设置）。
+
+> 本仓库是 [lu9944/rustdesk-quick-support](https://github.com/lu9944/rustdesk-quick-support) 的分支，额外加了**直接 IP 访问**（含来源白名单）与**版本号/构建指纹**。上游产物不含这些改动，请勿混用。
 
 ### Windows
 
