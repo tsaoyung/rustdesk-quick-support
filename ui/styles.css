@@ -235,6 +235,11 @@ body {
     color: var(--text-muted);
 }
 
+.field-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
 .ip-others {
     font-size: 11px;
     color: var(--text-muted);

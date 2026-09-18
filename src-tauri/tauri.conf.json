@@ -15,7 +15,7 @@
         "title": "RustDesk QuickSupport",
         "label": "main",
         "width": 420,
-        "height": 620,
+        "height": 646,
         "resizable": false,
         "maximizable": false,
         "center": true

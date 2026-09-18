@@ -17,15 +17,39 @@ pub fn spawn() {
         return;
     }
     tokio::spawn(async move {
+        let port = config::direct_port();
+        // Back off when the port is taken. A second instance of this app on the
+        // same machine can never own the same port, and retrying every 3s just
+        // floods the log without ever succeeding — so grow the interval and say
+        // once per attempt what is actually wrong.
+        let mut retry_secs = 3u64;
         loop {
             if let Err(e) = run().await {
+                if is_addr_in_use(&e) {
+                    crate::set_direct_listening(false);
+                    warn!(
+                        "direct port {port} is already in use (another instance of this app is \
+                         probably running). Direct IP access is unavailable for this instance; \
+                         the ID/relay path still works. Next retry in {retry_secs}s."
+                    );
+                    tokio::time::sleep(Duration::from_secs(retry_secs)).await;
+                    retry_secs = (retry_secs * 2).min(60);
+                    continue;
+                }
+                retry_secs = 3;
                 error!("direct listener error: {e}");
             }
-            // Port busy or a transient bind failure: back off and retry, the
-            // same way the official implementation loops.
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            tokio::time::sleep(Duration::from_secs(retry_secs)).await;
         }
     });
+}
+
+/// True when the failure is "the port is already taken" rather than something
+/// transient. `run()` returns `anyhow::Error`, so unwrap the io error first.
+fn is_addr_in_use(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .map(|io| io.kind() == std::io::ErrorKind::AddrInUse)
+        .unwrap_or(false)
 }
 
 async fn run() -> anyhow::Result<()> {

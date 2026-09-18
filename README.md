@@ -51,10 +51,10 @@ RUSTDESK_KEY=
 # Socks5 代理（可选，格式 host:port）
 RUSTDESK_SOCKS5=
 
-# 预设设备 ID（留空则自动生成）
+# 预设设备 ID（留空即可，见下方说明）
 RUSTDESK_ID=
 
-# 预设密码（留空则自动随机生成）
+# 预设「固定密码」（留空即为每次启动随机的一次性密码，见下方说明）
 RUSTDESK_PASSWORD=
 
 # 直接 IP 访问（默认 Y；设为 N 则为纯中继客户端）
@@ -69,12 +69,31 @@ RUSTDESK_DIRECT_PORT=21118
 | `RUSTDESK_SERVER` | 自建服务器地址，默认 `rs-ny.rustdesk.com` | 否 |
 | `RUSTDESK_KEY` | 服务器认证密钥 | 否 |
 | `RUSTDESK_SOCKS5` | 代理地址 | 否 |
-| `RUSTDESK_ID` | 预设设备 ID，留空自动生成 | 否 |
-| `RUSTDESK_PASSWORD` | 预设连接密码，留空随机 6 位 | 否 |
+| `RUSTDESK_ID` | 预设设备 ID，**留空即可**（见下方「设备 ID 与密码」） | 否 |
+| `RUSTDESK_PASSWORD` | 预设**固定**密码；留空 = 每次启动随机的一次性密码 | 否 |
 | `RUSTDESK_DIRECT` | 允许直接 IP 访问，默认 `Y` | 否 |
 | `RUSTDESK_DIRECT_PORT` | 直接 IP 访问端口，默认 `21118` | 否 |
 
 修改 `.env` 后需重新编译。
+
+---
+
+## 设备 ID 与密码
+
+**ID：每台机器固定、互不重复。** 首次运行时随机生成一个 9 位 ID 并保存到本机配置文件，之后一直沿用（只有删掉配置文件才会变）。
+
+> ⚠ **不要为批量分发预设 `RUSTDESK_ID`。** 所有顶着同一个 ID 的客户端会在服务器上互相覆盖，控制端按 ID 连接时可能连到**错误的机器**。留空即可。
+
+**密码：默认是一次性密码，每次启动重新生成，且不写入磁盘。** 这与官方客户端一致（官方原文：*the temporary password refreshes automatically, so there is no lasting open door after the session ends*）。程序关闭后旧密码立即失效，适合"发给客户做一次性协助"的场景。
+
+只有**无人值守 / 需要固定密码**时，才在编译期设 `RUSTDESK_PASSWORD`。
+
+| 行为 | 默认（留空） | 编译期设死 |
+|---|---|---|
+| ID | 首次随机生成并持久化，每台机器各不相同 | 所有客户端共用同一 ID（仅适合单台无人值守机器） |
+| 密码 | 每次启动重新随机，不落盘 | 固定不变，永久有效 |
+
+> 同一台机器**同时开两个实例**时，两者共用同一个 ID，且第二个实例无法监听直连端口——日志会提示 `direct port 21118 is already in use`，该实例的直连不可用（中继仍可用）。需要多实例请分别部署到不同机器。
 
 ---
 

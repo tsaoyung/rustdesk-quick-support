@@ -1,7 +1,7 @@
 // Persistent device config: id, password, Ed25519 signing keypair, uuid, and
 // server settings baked into the binary at compile time (see build.rs + option_env!).
 use anyhow::Result;
-use log::info;
+use log::{info, warn};
 use rand::Rng;
 use sodiumoxide::crypto::sign;
 use std::fs;
@@ -69,18 +69,30 @@ fn config_file() -> PathBuf {
     dir.join("config.txt")
 }
 
+/// Lowest/highest 9-digit device ID (RustDesk shows IDs as nine digits).
+const ID_MIN: u64 = 100_000_000;
+const ID_MAX: u64 = 999_999_999;
+
+/// A fresh 9-digit device ID.
+///
+/// Generated once on first run and then persisted, so a machine keeps the same
+/// ID for as long as its config file survives — the ID is deliberately **not**
+/// derived from the hardware any more. The previous MAC-based version caused two
+/// avoidable collisions, both of which make two devices fight over one ID on
+/// hbbs (whichever registered last wins, so a controller reaching that ID may
+/// land on the wrong machine):
+///
+///   * it built a 32-bit value from the MAC's last four bytes and then masked it
+///     with `& 0x1FFFFFFF`, keeping only 29 bits. Two genuinely different MACs
+///     such as `00:11:00:AA:BB:CC` and `00:11:E0:AA:BB:CC` mapped to the same ID.
+///   * `mac_address::get_mac_address()` returns the *first* interface, so
+///     machines cloned from an image, or using a shared/virtual/VPN adapter,
+///     reported identical MACs and therefore an identical ID.
+///
+/// Randomising keeps the ID unique per installation; persisting keeps it stable.
 fn generate_id() -> String {
-    if let Ok(Some(ma)) = mac_address::get_mac_address() {
-        let bytes = ma.bytes();
-        let mut id: u32 = 0;
-        for &b in &bytes[2..] {
-            id = (id << 8) | (b as u32);
-        }
-        id &= 0x1FFFFFFF;
-        return id.to_string();
-    }
     let mut rng = rand::thread_rng();
-    rng.gen_range(1_000_000_000u32..2_000_000_000u32).to_string()
+    rng.gen_range(ID_MIN..=ID_MAX).to_string()
 }
 
 fn generate_password() -> String {
@@ -114,9 +126,9 @@ fn build_config() -> Result<DeviceConfig> {
         option_env!("RUSTDESK_KEY").map(|v| v.len()).unwrap_or(0),
         option_env!("RUSTDESK_ID"),
         if option_env!("RUSTDESK_PASSWORD").is_some() {
-            "preset"
+            "fixed (baked)"
         } else {
-            "auto"
+            "one-time (regenerated each launch)"
         },
     );
 
@@ -125,7 +137,6 @@ fn build_config() -> Result<DeviceConfig> {
 
     let config_path = config_file();
     let mut saved_id = String::new();
-    let mut saved_password = String::new();
     let mut saved_salt = String::new();
     let mut saved_sk = String::new();
     let mut saved_pk = String::new();
@@ -136,23 +147,43 @@ fn build_config() -> Result<DeviceConfig> {
             if let Some((k, v)) = line.split_once('=') {
                 match k.trim() {
                     "id" => saved_id = v.trim().to_string(),
-                    "password" => saved_password = v.trim().to_string(),
                     "salt" => saved_salt = v.trim().to_string(),
                     "sk" => saved_sk = v.trim().to_string(),
                     "pk" => saved_pk = v.trim().to_string(),
                     "uuid" => saved_uuid = v.trim().to_string(),
+                    // A legacy `password=` line may exist from older builds; it is
+                    // ignored on purpose (see the password comment below).
                     _ => {}
                 }
             }
         }
     }
 
-    let id = baked_str(option_env!("RUSTDESK_ID"))
+    // ID: stable per installation. A baked value wins (deliberately supported
+    // for unattended machines), otherwise reuse what we persisted, otherwise
+    // mint a fresh one.
+    let baked_id = baked_str(option_env!("RUSTDESK_ID"));
+    if baked_id.is_some() {
+        warn!(
+            "RUSTDESK_ID is baked into this binary: EVERY client will report the same ID \
+             and they will overwrite each other on the server. Only use it for a single \
+             unattended machine."
+        );
+    }
+    let id = baked_id
         .or_else(|| if saved_id.is_empty() { None } else { Some(saved_id.clone()) })
         .unwrap_or_else(generate_id);
 
+    // Password: a one-time password, regenerated on every launch.
+    //
+    // This matches the official client, where the temporary password "refreshes
+    // automatically, so there is no lasting open door after the session ends".
+    // Two reasons it is not persisted:
+    //   * a shipped support tool must not keep a permanent credential valid
+    //     forever after a customer has read it out loud once;
+    //   * a fixed password shared by every client would blur them together.
+    // Bake `RUSTDESK_PASSWORD` for the "permanent password" use case instead.
     let password = baked_str(option_env!("RUSTDESK_PASSWORD"))
-        .or_else(|| if saved_password.is_empty() { None } else { Some(saved_password.clone()) })
         .unwrap_or_else(generate_password);
 
     // Permanent password salt. Reuse the saved one if present so already-paired
@@ -186,11 +217,12 @@ fn build_config() -> Result<DeviceConfig> {
         saved_uuid.clone()
     };
 
-    // Persist everything for next run.
+    // Persist the identity for next run. The password is deliberately NOT
+    // written: it is a one-time credential, so keeping it on disk would both
+    // leak it and silently turn it back into a permanent one.
     let content = format!(
-        "id={}\npassword={}\nsalt={}\nsk={}\npk={}\nuuid={}\n",
+        "id={}\nsalt={}\nsk={}\npk={}\nuuid={}\n",
         id,
-        password,
         password_salt,
         hex::encode(&sign_sk),
         hex::encode(&sign_pk),
