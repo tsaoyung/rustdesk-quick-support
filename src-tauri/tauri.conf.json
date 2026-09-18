@@ -1,6 +1,6 @@
 {
   "productName": "RustDeskQuickSupport",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.rustdesk.quicksupport",
   "build": {
     "frontendDist": "../ui",

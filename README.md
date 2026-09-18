@@ -8,22 +8,22 @@
 
 ### Windows
 
-下载 `RustDesk-QuickSupport-windows-x86_64.exe`，**双击直接运行**（单文件，无需安装；调用系统 WebView2，Win10+ 自带）。
+下载 `RustDeskQuickSupport-windows-x86_64-<版本>-b<构建>.exe`，**双击直接运行**（单文件，无需安装；调用系统 WebView2，Win10+ 自带）。
 
 ### Linux
 
 下载 `.AppImage`，加可执行权限后双击运行：
 
 ```bash
-chmod +x RustDesk-QuickSupport-*.AppImage
-./RustDesk-QuickSupport-*.AppImage
+chmod +x RustDeskQuickSupport-linux-x86_64-*.AppImage
+./RustDeskQuickSupport-linux-x86_64-*.AppImage
 ```
 
 ### macOS
 
 > macOS 产物做了 ad-hoc 签名但**未做 Apple 公证**，从网页下载首次打开会被 Gatekeeper 拦截。按下面任一方式解锁即可（app 名无空格，命令无需加引号）。
 
-1. 下载 `.dmg`（Apple 芯片用 `_aarch64.dmg`，Intel 用 `_x86_64.dmg`），打开后把 `RustDeskQuickSupport.app` 拖入 `应用程序`（Applications）。
+1. 下载 `.dmg`（Apple 芯片用 `...-macos-arm64-....dmg`，Intel 用 `...-macos-x86_64-....dmg`），打开后把 `RustDeskQuickSupport.app` 拖入 `应用程序`（Applications）。
 2. **清除隔离属性**（推荐，一次即可）：
 
    ```bash
@@ -62,6 +62,12 @@ RUSTDESK_DIRECT=Y
 
 # 直接 IP 访问端口（默认 21118）
 RUSTDESK_DIRECT_PORT=21118
+
+# 允许直连的来源 IP / CIDR，逗号分隔（留空 = 不限制任何来源）
+RUSTDESK_DIRECT_WHITELIST=
+
+# 构建指纹，显示在界面版本号后面（留空则只显示版本号；CI 会自动填）
+RUSTDESK_BUILD=
 ```
 
 | 变量 | 说明 | 必填 |
@@ -73,6 +79,8 @@ RUSTDESK_DIRECT_PORT=21118
 | `RUSTDESK_PASSWORD` | 预设**固定**密码；留空 = 每次启动随机的一次性密码 | 否 |
 | `RUSTDESK_DIRECT` | 允许直接 IP 访问，默认 `Y` | 否 |
 | `RUSTDESK_DIRECT_PORT` | 直接 IP 访问端口，默认 `21118` | 否 |
+| `RUSTDESK_DIRECT_WHITELIST` | 允许直连的来源 IP / CIDR，逗号分隔；留空 = 不限制 | 否 |
+| `RUSTDESK_BUILD` | 构建指纹，显示在版本号后面；CI 自动设置 | 否 |
 
 修改 `.env` 后需重新编译。
 
@@ -111,6 +119,8 @@ RUSTDESK_DIRECT_PORT=21118
 - **防火墙**需放行 TCP 21118 入站（Windows 首次运行会弹窗，选择允许即可）。
 - 界面显示的 IP 已做优先级排序：**默认路由出口地址排第一**，虚拟网卡（Parallels / VPN 等）排在下面的 `Also:` 里。第一行连不上时再试备选地址。
 - 直连与中继**可同时工作**：服务器不可达时直连依然可用，主界面会给出提示。只想保留中继模式，把 `RUSTDESK_DIRECT` 设为 `N` 重新编译。
+- ⚠ **直连会话本身不加密。** 官方 RustDesk 的直连是全项目唯一以 `secure = false` 建立的 TCP 连接（跳过 Secure 握手、不发 `SignedId`），本项目与之一致——所以谁连上端口，谁就拿到登录框。请只在可信网络内启用。
+- **限定来源**：需要收紧时设 `RUSTDESK_DIRECT_WHITELIST`，逗号分隔地址或网段，例如 `RUSTDESK_DIRECT_WHITELIST=192.168.1.0/24,10.0.0.7`。不在名单内的来源会被立刻断开，日志记录 `direct access from <ip> rejected`。留空则是旧行为（不限制）。**写错的条目只会被忽略**（启动日志会点名），不会误放行。
 
 ---
 
@@ -118,33 +128,45 @@ RUSTDESK_DIRECT_PORT=21118
 
 仓库内置 `.github/workflows/build.yml`，会同时在 Windows / Linux / macOS 三个平台的官方 runner 上**原生编译**（比交叉编译更稳），产物双击即用：
 
-| 平台 | 产物 | 双击行为 |
+| 平台 | 产物（`<ver>` = 版本号，`<build>` = `<run>.<sha7>`） | 双击行为 |
 |------|------|----------|
-| Windows | `RustDesk-QuickSupport-windows-x86_64.exe` | **单文件便携 exe，双击直接运行**（调用系统 WebView2，无需安装） |
-| Linux | `.AppImage` + `.deb` | AppImage 单文件可直接运行（需 `chmod +x`） |
-| macOS | `.dmg`（arm64 / x86_64 各一份） | 挂载后拖入 Applications |
+| Windows | `RustDeskQuickSupport-windows-x86_64-<ver>-b<build>.exe` | **单文件便携 exe，双击直接运行**（调用系统 WebView2，无需安装） |
+| Linux | `RustDeskQuickSupport-linux-x86_64-<ver>-b<build>.AppImage` + `.deb` | AppImage 单文件可直接运行（需 `chmod +x`） |
+| macOS | `RustDeskQuickSupport-macos-{arm64,x86_64}-<ver>-b<build>.dmg` | 挂载后拖入 Applications |
 
-**触发方式：**
+> 文件名同时带**版本号**和**构建指纹**：同一个版本会构建很多次，只靠版本号（甚至不带版本号）无法判断手头这个 exe 是哪一次编出来的。
 
-1. **手动**：GitHub 仓库 → Actions → `Build` → Run workflow。手动触发时会弹出输入框，直接填写即可把服务器配置**编译期内置**到产物里：
-   - `server`：中继服务器地址（域名或 IP，留空用默认 `rs-ny.rustdesk.com`）
-   - `key`：服务器密钥（未开启认证则留空）
-   - `socks5`：Socks5 代理 `host:port`（可选）
-   - `direct`：是否允许直接 IP 访问（默认 `Y`）
-   - `direct_port`：直接 IP 访问端口（默认 `21118`）
-   - `publish`：是否发布到 Release（默认 `true`，自动生成预发布 tag `v0.1.0-ci.<run>-<sha7>`）
+**触发方式：只有手动触发。**（刻意不监听 `v*` tag —— 公开仓库上 tag 触发等于自动对全网发版，绕过了 `publish` 的把关。）
 
-   构建完成后产物既在该 run 的 Artifacts 里，也会（默认）发布为一条 **Pre-release**。
-2. **自动发布正式版**：推送 `v*` 形式的 tag，构建完成后自动创建正式 GitHub Release 并挂上全部产物（tag 触发时从[Repository Secrets](#secrets)读取配置）：
-   ```bash
-   git tag v0.1.0 && git push origin v0.1.0
-   ```
+GitHub 仓库 → Actions → `Build` → Run workflow，弹出的输入框会**编译期内置**到产物里：
 
-<a name="secrets"></a>**通过 Secrets 配置（用于 tag 自动发布）**：在仓库 Settings → Secrets and variables → Actions 添加 `RUSTDESK_SERVER`、`RUSTDESK_KEY`、`RUSTDESK_SOCKS5`（可选再加 `RUSTDESK_DIRECT`、`RUSTDESK_DIRECT_PORT`），tag 触发时会读取并内置；未设置的项按默认值处理（`direct=Y`、`port=21118`）。
+- `server`：中继服务器地址（域名或 IP，留空用默认 `rs-ny.rustdesk.com`）
+- `key`：服务器密钥（未开启认证则留空）
+- `socks5`：Socks5 代理 `host:port`（可选）
+- `direct`：是否允许直接 IP 访问（默认 `Y`）
+- `direct_port`：直接 IP 访问端口（默认 `21118`）
+- `direct_whitelist`：允许直连的来源 IP / CIDR，逗号分隔（留空 = 不限制）
+- `publish`：是否发布到 Release（默认 `true`，生成预发布 tag `v<ver>-ci.<run>-<sha7>`）
+
+构建完成后产物既在该 run 的 Artifacts 里，也会（默认）发布为一条 **Pre-release**。要出正式版，确认产物无误后**手动**把这条 Pre-release 提升为正式版即可。
+
+<a name="secrets"></a>**通过 Secrets 配置**：在仓库 Settings → Secrets and variables → Actions 添加 `RUSTDESK_SERVER`、`RUSTDESK_KEY`、`RUSTDESK_SOCKS5`（可选再加 `RUSTDESK_DIRECT`、`RUSTDESK_DIRECT_PORT`、`RUSTDESK_DIRECT_WHITELIST`）；输入框留空时会读这里，仍未设置的按默认值处理（`direct=Y`、`port=21118`）。
 
 > ✅ 配置是在**编译期**内置进二进制的：`src-tauri/build.rs` 读取 `.env`/环境变量，通过 `cargo:rustc-env` 固化，源码用 `option_env!()` 读取（见 `src-tauri/src/config.rs`）。因此通过 AppImage/DMG/便携 exe 分发的客户端**无需 `.env` 即可连接你指定的服务器**，双击即用。
 
 > macOS 产物的运行方式见顶部[下载与运行](#macos)；CI 已对 `.app` 做 ad-hoc 签名（`tauri.conf.json` 里 `bundle.macOS.signingIdentity = "-"`）。
+
+---
+
+## 版本号与构建指纹
+
+版本号的**唯一来源**是 `src-tauri/tauri.conf.json` 的 `version`：
+
+- 产物文件名、macOS `CFBundleShortVersionString`、界面左下角显示的版本号，全部由它决定；
+- `src-tauri/Cargo.toml` 的 `version` 必须与它相同。CI 的 `Verify version consistency` 步骤会在构建前比对两处，不一致**直接失败**（防止"文件名写着 0.1.1、二进制里还是 0.1.0"）。本地改版本号请两处一起改；
+- 界面显示为 `<version> · build <run>.<sha7>`，`build` 由 CI 通过 `RUSTDESK_BUILD` 注入。让客户截个图，就能确认对方手上到底是哪一次构建。
+
+发版流程：把两处 `version` 一起改掉 → 先跑一次 `publish=false` 的构建自验 → 确认无误后再跑 `publish=true` 出预发布。
 
 ---
 

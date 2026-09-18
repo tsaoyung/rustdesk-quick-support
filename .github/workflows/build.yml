@@ -1,8 +1,10 @@
 name: Build
 
-# 触发条件：
-#   1. 手动触发（Actions 页面点 Run workflow，可填服务器 IP / 密钥，默认发布预发布版 Release）
-#   2. 推送 v* 形式的 tag（自动发布正式版 Release；此时从 Secrets 读取配置）
+# 触发条件：**只有手动触发**。
+#
+# 这里刻意不再监听 `push: tags: v*`：fork 是公开仓库，tag 触发会自动创建对全网
+# 可见的 Release，等于绕过 `publish` 输入这道人工把关。要发正式版，先跑一次
+# publish=true 的构建，确认产物无误后，再手动把 Artifacts 提成 Release。
 on:
   workflow_dispatch:
     inputs:
@@ -26,14 +28,15 @@ on:
         description: "直接 IP 访问端口（默认 21118）"
         required: false
         default: "21118"
+      direct_whitelist:
+        description: "允许直连的来源 IP/CIDR，逗号分隔（留空 = 不限制）"
+        required: false
+        default: ""
       publish:
         description: "是否发布到 Release（自动生成预发布 tag）"
         type: boolean
         required: false
         default: true
-  push:
-    tags:
-      - 'v*'
 
 env:
   CARGO_INCREMENTAL: 0
@@ -71,6 +74,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Compute version and build fingerprint
+        id: ver
+        shell: bash
+        # 版本号唯一源是 src-tauri/tauri.conf.json 的 `version`：bundle 产物名、
+        # macOS Info.plist、界面显示都由它决定。构建指纹 `<run>.<sha7>` 用来区分
+        # 同一个版本的多次构建 —— 光有版本号分不出哪次改了什么。
+        run: |
+          set -e
+          VER=$(grep -m1 '"version"' src-tauri/tauri.conf.json \
+                | sed -E 's/.*"version" *: *"([^"]+)".*/\1/')
+          if [ -z "$VER" ]; then
+            echo "::error::无法从 src-tauri/tauri.conf.json 读出 version"
+            exit 1
+          fi
+          echo "version=${VER}"                            >> "$GITHUB_OUTPUT"
+          echo "build=${GITHUB_RUN_NUMBER}.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version consistency
+        shell: bash
+        # Cargo.toml 的 version 虽不再用于显示，但仍会写进 crate 元数据与 Cargo.lock；
+        # 两处一旦漂移，界面/文件名与二进制元数据就会互相矛盾。宁可在构建前失败。
+        run: |
+          set -e
+          CONF="${{ steps.ver.outputs.version }}"
+          CARGO=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tauri.conf.json=${CONF}  Cargo.toml=${CARGO}"
+          if [ "$CONF" != "$CARGO" ]; then
+            echo "::error::版本号不一致：tauri.conf.json=${CONF} vs Cargo.toml=${CARGO}"
+            exit 1
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -104,8 +138,8 @@ jobs:
         run: cargo tauri icon src-tauri/icons/128x128@2x.png
 
       - name: Write .env (编译期内置到二进制)
-        # build.rs 在编译期读取 .env，用 cargo:rustc-env 固化，
-        # 运行时无需 .env。手动触发时优先用 inputs，回退到 Secrets。
+        # build.rs 在编译期读取 .env，用 cargo:rustc-env 固化，运行时无需 .env。
+        # inputs 优先，回退到 Repository Secrets，再回退到内置默认值。
         shell: bash
         run: |
           cat > .env <<EOF
@@ -116,6 +150,8 @@ jobs:
           RUSTDESK_PASSWORD=
           RUSTDESK_DIRECT=${DIRECT}
           RUSTDESK_DIRECT_PORT=${DIRECT_PORT}
+          RUSTDESK_DIRECT_WHITELIST=${DIRECT_WHITELIST}
+          RUSTDESK_BUILD=${BUILD}
           EOF
           echo "---- .env (key/redacted) ----"
           sed -E 's/(RUSTDESK_KEY)=.*/\1=<redacted>/' .env
@@ -125,51 +161,63 @@ jobs:
           SOCKS5: ${{ inputs.socks5 || secrets.RUSTDESK_SOCKS5 }}
           DIRECT: ${{ inputs.direct || secrets.RUSTDESK_DIRECT || 'Y' }}
           DIRECT_PORT: ${{ inputs.direct_port || secrets.RUSTDESK_DIRECT_PORT || '21118' }}
+          DIRECT_WHITELIST: ${{ inputs.direct_whitelist || secrets.RUSTDESK_DIRECT_WHITELIST || '' }}
+          BUILD: ${{ steps.ver.outputs.build }}
 
       - name: Build (${{ matrix.target }})
         run: cargo tauri build --target ${{ matrix.target }} ${{ matrix.bundle_args }}
 
       - name: Collect double-click artifacts into dist/
-        # 把便携产物收集到一个扁平目录，命名清晰，便于发布与下载
+        # 把便携产物收集到一个扁平目录。命名统一为
+        #   RustDeskQuickSupport-<label>-<version>-b<run>.<sha7>.<ext>
+        # 两个理由：① Windows 的便携 exe 原本完全不带版本，四个平台里唯独它无法
+        # 区分是哪次构建；② 同一版本会构建很多次，只用版本号仍会撞名，下载两次就
+        # 只能靠系统自动加的 " 2" " 3" 后缀辨别。
         shell: bash
         run: |
           set -e
           shopt -s nullglob
           mkdir -p dist
           REL="target/${{ matrix.target }}/release"
+          NAME="RustDeskQuickSupport-${{ matrix.label }}-${{ steps.ver.outputs.version }}-b${{ steps.ver.outputs.build }}"
           # Windows: 单文件便携 exe（--no-bundle 产物，调用系统 WebView2，双击即用）
           if [ -f "$REL/rustdesk-client.exe" ]; then
-            cp "$REL/rustdesk-client.exe" "dist/RustDesk-QuickSupport-${{ matrix.label }}.exe"
+            cp "$REL/rustdesk-client.exe" "dist/${NAME}.exe"
           fi
           # Linux: AppImage（单文件，双击运行）
-          for f in "$REL"/bundle/appimage/*.AppImage; do cp "$f" dist/; done
+          for f in "$REL"/bundle/appimage/*.AppImage; do cp "$f" "dist/${NAME}.AppImage"; done
           # Linux: deb（可选，apt 安装）
-          for f in "$REL"/bundle/deb/*.deb; do cp "$f" dist/; done
+          for f in "$REL"/bundle/deb/*.deb; do cp "$f" "dist/${NAME}.deb"; done
           # macOS: dmg（挂载后拖入 Applications）
-          for f in "$REL"/bundle/dmg/*.dmg; do cp "$f" dist/; done
+          for f in "$REL"/bundle/dmg/*.dmg; do cp "$f" "dist/${NAME}.dmg"; done
           echo "---- dist/ ----"
           ls -lh dist/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-quicksupport-${{ matrix.label }}
+          # artifact 名带版本号，否则不同 run 的下载结果会落进同名目录互相覆盖
+          name: rustdesk-quicksupport-${{ matrix.label }}-${{ steps.ver.outputs.version }}
           if-no-files-found: error
           path: dist/*
 
   # ───────────────────────────────────────────────
   # 发布 Release
-  #   - 推 v* tag：正式 Release，tag 用推送的 tag
-  #   - 手动触发且 publish=true：预发布，tag 自动生成 v0.1.0-ci.<run>-<sha7>
+  #   只有「手动触发 + publish=true」才会走到这里，发一条预发布，
+  #   tag 形如 v<version>-ci.<run>-<sha7>（版本从 tauri.conf.json 读，不写死）。
+  #   已刻意移除 v* tag 触发：公开 fork 上它等于自动对全网发版。
   # ───────────────────────────────────────────────
   release:
     name: Publish Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout (读取版本号)
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -183,21 +231,19 @@ jobs:
         id: rel
         shell: bash
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF_NAME}"        >> "$GITHUB_OUTPUT"
-            echo "prerelease=false"              >> "$GITHUB_OUTPUT"
-          else
-            SHORT="${GITHUB_SHA::7}"
-            echo "tag=v0.1.0-ci.${GITHUB_RUN_NUMBER}-${SHORT}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true"               >> "$GITHUB_OUTPUT"
-          fi
+          set -e
+          VER=$(grep -m1 '"version"' src-tauri/tauri.conf.json \
+                | sed -E 's/.*"version" *: *"([^"]+)".*/\1/')
+          SHORT="${GITHUB_SHA::7}"
+          echo "tag=v${VER}-ci.${GITHUB_RUN_NUMBER}-${SHORT}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
           name: ${{ steps.rel.outputs.tag }}
-          prerelease: ${{ steps.rel.outputs.prerelease }}
+          # 手动触发的构建一律先作为预发布，正式版由人确认后手动提升
+          prerelease: true
           generate_release_notes: true
           # 产物已拍平在 artifacts/ 根目录
           files: |

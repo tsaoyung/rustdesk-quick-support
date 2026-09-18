@@ -308,3 +308,140 @@ pub fn direct_port() -> u16 {
         .filter(|p| *p > 0)
         .unwrap_or(DIRECT_PORT)
 }
+
+/// Source addresses allowed to use IP direct access, from the baked
+/// `RUSTDESK_DIRECT_WHITELIST` — a comma separated list of addresses
+/// (`10.0.0.7`) and/or CIDR blocks (`10.0.0.0/24`, `192.168.1.0/24`).
+///
+/// Empty list ⇒ no restriction, i.e. exactly the behaviour before this option
+/// existed: any source that can route to the port may connect. Note the direct
+/// socket carries no encryption of its own (see `direct.rs`), so set this when
+/// the machine sits on a network you do not fully trust.
+pub fn direct_whitelist() -> Vec<String> {
+    baked_str(option_env!("RUSTDESK_DIRECT_WHITELIST"))
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a direct-IP connection coming from `ip` may proceed.
+pub fn direct_ip_allowed(ip: std::net::IpAddr) -> bool {
+    let list = direct_whitelist();
+    // Short-circuit the common case: nothing configured ⇒ allow everything.
+    list.is_empty() || list.iter().any(|entry| ip_matches(ip, entry))
+}
+
+/// Entries of the whitelist that do not parse. Reported at startup so that a
+/// typo is visible in the log instead of silently narrowing nothing.
+pub fn direct_whitelist_invalid() -> Vec<String> {
+    direct_whitelist()
+        .into_iter()
+        .filter(|e| !is_valid_entry(e))
+        .collect()
+}
+
+/// One whitelist entry against one source address. A malformed entry never
+/// matches, so a typo cannot silently widen access.
+pub fn ip_matches(ip: std::net::IpAddr, entry: &str) -> bool {
+    use std::net::IpAddr;
+    match entry.split_once('/') {
+        Some((base, prefix)) => {
+            let (Ok(base), Ok(prefix)) = (
+                base.trim().parse::<IpAddr>(),
+                prefix.trim().parse::<u32>(),
+            ) else {
+                return false;
+            };
+            match (ip, base) {
+                (IpAddr::V4(a), IpAddr::V4(b)) if prefix <= 32 => {
+                    let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+                    (u32::from(a) & mask) == (u32::from(b) & mask)
+                }
+                (IpAddr::V6(a), IpAddr::V6(b)) if prefix <= 128 => {
+                    let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - prefix) };
+                    (u128::from(a) & mask) == (u128::from(b) & mask)
+                }
+                _ => false,
+            }
+        }
+        None => entry
+            .trim()
+            .parse::<IpAddr>()
+            .map(|e| e == ip)
+            .unwrap_or(false),
+    }
+}
+
+fn is_valid_entry(entry: &str) -> bool {
+    use std::net::IpAddr;
+    match entry.split_once('/') {
+        Some((base, prefix)) => {
+            let (Ok(base), Ok(prefix)) = (
+                base.trim().parse::<IpAddr>(),
+                prefix.trim().parse::<u32>(),
+            ) else {
+                return false;
+            };
+            match base {
+                IpAddr::V4(_) => prefix <= 32,
+                IpAddr::V6(_) => prefix <= 128,
+            }
+        }
+        None => entry.trim().parse::<IpAddr>().is_ok(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn exact_address_matches_only_itself() {
+        assert!(ip_matches(ip("10.0.0.7"), "10.0.0.7"));
+        assert!(!ip_matches(ip("10.0.0.8"), "10.0.0.7"));
+        // A bare address must not behave like a prefix.
+        assert!(!ip_matches(ip("10.0.0.7"), "10.0.0.0"));
+    }
+
+    #[test]
+    fn cidr_matches_the_block_and_nothing_more() {
+        assert!(ip_matches(ip("192.168.1.5"), "192.168.1.0/24"));
+        assert!(ip_matches(ip("192.168.1.255"), "192.168.1.0/24"));
+        assert!(!ip_matches(ip("192.168.2.5"), "192.168.1.0/24"));
+        // /0 spans the whole family, and must not trap on the shift.
+        assert!(ip_matches(ip("8.8.8.8"), "0.0.0.0/0"));
+        // /32 is the single host itself.
+        assert!(ip_matches(ip("10.1.2.3"), "10.1.2.3/32"));
+        assert!(!ip_matches(ip("10.1.2.4"), "10.1.2.3/32"));
+    }
+
+    #[test]
+    fn families_and_malformed_entries_never_match() {
+        assert!(!ip_matches(ip("10.0.0.1"), "2001:db8::/32"));
+        assert!(!ip_matches(ip("10.0.0.1"), "10.0.0.0/33"));
+        assert!(!ip_matches(ip("10.0.0.1"), "not-an-ip"));
+        assert!(!ip_matches(ip("10.0.0.1"), "10.0.0.0/"));
+        assert!(ip_matches(ip("2001:db8::1"), "2001:db8::1"));
+        assert!(ip_matches(ip("2001:db8::5"), "2001:db8::/32"));
+    }
+
+    #[test]
+    fn entry_validation_flags_typos() {
+        assert!(is_valid_entry("10.0.0.1"));
+        assert!(is_valid_entry("10.0.0.0/24"));
+        assert!(is_valid_entry("10.0.0.0/32"));
+        assert!(is_valid_entry("2001:db8::/128"));
+        assert!(!is_valid_entry("10.0.0.0/33"));
+        assert!(!is_valid_entry("2001:db8::/129"));
+        assert!(!is_valid_entry("garbage"));
+    }
+}

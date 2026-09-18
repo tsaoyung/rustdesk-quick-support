@@ -1,6 +1,9 @@
 [package]
 name = "rustdesk-client"
-version = "0.1.0"
+# 版本号唯一源是 `tauri.conf.json` 的 `version`（bundle 文件名、macOS
+# CFBundleShortVersionString、界面显示都看它）。这里必须与之保持一致 ——
+# CI 的 "Verify version consistency" 步骤会比对两处，不一致直接失败。
+version = "0.1.1"
 description = "RustDesk QuickSupport - Tauri Edition"
 authors = ["rustdesk"]
 edition = "2021"

@@ -123,8 +123,19 @@ fn get_status() -> ConnectionStatus {
 }
 
 #[tauri::command]
-fn get_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
+fn get_version(app: tauri::AppHandle) -> String {
+    // 版本号取自 `tauri.conf.json`（编译期写进 PackageInfo），**不是** Cargo.toml
+    // —— 这样界面上显示的版本与安装包文件名（bundle 命名同样来自该字段）永远
+    // 一致。见 tauri-codegen/src/context.rs：config.version 存在时用它，否则回落到
+    // CARGO_PKG_VERSION。
+    let version = app.package_info().version.to_string();
+    // 构建指纹：CI 注入 `<run_number>.<sha7>`。同一个版本号会被构建很多次，
+    // 光看版本分不出是哪一次 —— 让客户截图就能定位到具体构建。
+    // 注意用"非空"判断而不是 is_some()：build.rs 会把 `.env` 里的空值也固化进去。
+    match option_env!("RUSTDESK_BUILD") {
+        Some(b) if !b.is_empty() => format!("{version} · build {b}"),
+        _ => version,
+    }
 }
 
 pub fn run() {

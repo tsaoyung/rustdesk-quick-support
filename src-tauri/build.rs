@@ -11,6 +11,10 @@ const BAKED_KEYS: &[&str] = &[
     "RUSTDESK_PASSWORD",
     "RUSTDESK_DIRECT",
     "RUSTDESK_DIRECT_PORT",
+    "RUSTDESK_DIRECT_WHITELIST",
+    // 构建指纹（CI 注入 `<run_number>.<sha7>`），只用于在界面上区分同版本的
+    // 多次构建，不参与任何连接逻辑。
+    "RUSTDESK_BUILD",
 ];
 
 fn bake_env_config() {
